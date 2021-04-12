@@ -3,6 +3,7 @@ import hashlib
 import json
 import logging
 import os
+import pathlib
 import re
 import shlex
 import shutil
@@ -94,10 +95,21 @@ class CondaContext(installable.InstallableContext):
                 conda_prefix = info["default_prefix"]
         if conda_prefix is None:
             conda_prefix = find_conda_prefix(conda_prefix)
-
         self.conda_prefix = conda_prefix
         if conda_exec is None:
             self.conda_exec = self._bin("conda")
+        if pathlib.Path(conda_exec).parent.parent != pathlib.Path(conda_prefix):
+            # Conda exec not in the conda prefix.
+            # In this case the environments always need to be copied.
+            self.internal_copy_dependencies = True
+            conda_prefix_path = pathlib.Path(conda_prefix)
+            # Since conda_exec is from a different prefix, it is possible that
+            # conda_prefix does not exist yet as this is just a directory where
+            # environments are created, not a full blown prefix.
+            if not conda_prefix_path.exists():
+                conda_prefix_path.mkdir(parents=True)
+        else:
+            self.internal_copy_dependencies = False
         if ensure_channels:
             if not isinstance(ensure_channels, list):
                 ensure_channels = [c for c in ensure_channels.split(",") if c]
@@ -460,8 +472,10 @@ def install_conda_targets(conda_targets, conda_context, env_name=None, allow_loc
     """
     if env_name is not None:
         create_args = [
-            "--name", env_name,  # environment for package
+            "--prefix", conda_context.env_path(env_name),  # environment for package
         ]
+        if conda_context.internal_copy_dependencies:
+            create_args.append("--copy")
         for conda_target in conda_targets:
             create_args.append(conda_target.package_specifier)
         return conda_context.exec_create(create_args, allow_local=allow_local)
@@ -477,9 +491,11 @@ def install_conda_target(conda_target, conda_context, skip_environment=False):
     """
     if not skip_environment:
         create_args = [
-            "--name", conda_target.install_environment,  # environment for package
+             "--prefix", conda_context.env_path(conda_target.install_environment),  # environment for package
             conda_target.package_specifier,
         ]
+        if conda_context.internal_copy_dependencies:
+            create_args.append("--copy")
         return conda_context.exec_create(create_args)
     else:
         return conda_context.exec_install([conda_target.package_specifier])
